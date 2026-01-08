@@ -1,308 +1,199 @@
-// ✅ LinkedIn Easy Apply Bot — Dynamic config.json
-const puppeteer = require("puppeteer");
+const puppeteer = require("puppeteer-extra");
+const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const path = require("path");
 const fs = require("fs");
 const { saveToDb } = require("../controllers/saveToDbController");
+
+puppeteer.use(StealthPlugin());
 
 // ✅ Load config
 const configPath = path.join(__dirname, "../config.json");
 if (!fs.existsSync(configPath)) throw new Error("config.json not found!");
 
 const {
-  baseURL,
-  email,
-  password,
-  location,
-  Period,
-  ChromePath,
-  resolution,
-  phoneNumber,
-  keywords,
-  AvgExperience,
-  numberOfPagination,
-  numberOfOffersPerPage,
+  email, password, location, Period, ChromePath,
+  resolution, numberOfPagination, numberOfOffersPerPage,
 } = JSON.parse(fs.readFileSync(configPath, "utf8"));
 
-let browser, page;
+// Override keywords
+const targetKeywords = ["software developer", "MERN stack developer", "backend dev", "frontend dev"];
 
+let browser, page;
 const MAX_APPLICATIONS = numberOfPagination * numberOfOffersPerPage;
 let totalApplied = 0;
 
-// 🔹 Stable job card selector
-const jobCardSelector = "div.job-card-container--clickable";
-
-// Add waitForTimeout if missing
-if (!puppeteer.Page.prototype.waitForTimeout) {
-  puppeteer.Page.prototype.waitForTimeout = function (ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  };
-}
+const selectors = {
+  jobCard: ".scaffold-layout__list-item, .job-card-container--clickable",
+  easyApplyBtn: "div.jobs-apply-button--top-card button.jobs-apply-button.artdeco-button.artdeco-button--3.artdeco-button--primary.ember-view",
+  nextBtn: "button[aria-label*='next'], button[aria-label*='Review'], button[aria-label*='Continue']",
+  submitBtn: "button[aria-label*='Submit application'], button[data-control-name='submit_unify'], button[aria-label*='Send application']",
+  dismissBtn: "button[aria-label*='Dismiss'], .artdeco-modal__dismiss",
+  textInput: "input.artdeco-text-input--input, .artdeco-text-input--input, input[type='text']",
+  radioLabel: "label[for*='radio'], .fb-radio-button__label",
+  select: "select" // Added for dropdowns
+};
 
 async function launchBrowser() {
   browser = await puppeteer.launch({
     headless: false,
     executablePath: ChromePath,
-    args: [resolution],
+    args: [
+      `--window-size=${resolution.split('x')[0] || 1920},${resolution.split('x')[1] || 1080}`,
+      "--disable-blink-features=AutomationControlled", 
+      "--no-sandbox"
+    ],
     defaultViewport: null,
   });
+  
   page = (await browser.pages())[0];
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
   page.setDefaultNavigationTimeout(60000);
-  console.log("[INFO] Browser launched");
-  await page.goto(baseURL, { waitUntil: "networkidle2" });
+  console.log("[INFO] Browser launched with Stealth mode");
 }
 
 async function loginLinkedIn() {
   console.log("[INFO] Logging in...");
-  await page.waitForSelector(
-    'input[id="username"], input[name="session_key"]',
-    { timeout: 20000 }
-  );
-  await page.type('input[id="username"], input[name="session_key"]', email, {
-    delay: 50,
-  });
-  await page.type(
-    'input[id="password"], input[name="session_password"]',
-    password,
-    { delay: 50 }
-  );
-
+  await page.goto("https://www.linkedin.com/login", { waitUntil: "domcontentloaded" });
+  await page.type('#username', email, { delay: 100 });
+  await page.type('#password', password, { delay: 100 });
+  
   await Promise.all([
-    page.keyboard.press("Enter"),
-    Promise.race([
-      page
-        .waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 })
-        .catch(() => {}),
-      page
-        .waitForSelector(
-          '[aria-label="Search by title, skill, or company"], .global-nav__me-photo',
-          { timeout: 30000 }
-        )
-        .catch(() => {}),
-    ]),
+    page.click('button[type="submit"]'),
+    page.waitForNavigation({ waitUntil: "networkidle2" }).catch(() => {})
   ]);
 
-  if (page.url().includes("checkpoint"))
-    throw new Error("Login blocked (captcha/verification)");
-
-  const loginError = await page.$(".form__label--error, .alert.error");
-  if (loginError) throw new Error("Login failed — check credentials");
-
-  console.log("[SUCCESS] Logged in");
+  if (page.url().includes("checkpoint")) {
+    console.log("[ACTION] Manual verification required.");
+    await page.waitForNavigation({ timeout: 0 }); 
+  }
 }
 
 async function searchJobs(keyword) {
-  console.log(`[INFO] Searching jobs for: ${keyword}`);
-  await page.goto("https://www.linkedin.com/jobs/search", {
-    waitUntil: "domcontentloaded",
-  });
+  const timeFilter = Period === "Past 24 hours" ? "r86400" : "r604800";
+  const searchUrl = `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(keyword)}&location=${encodeURIComponent(location)}&f_TPR=${timeFilter}&f_AL=true&f_E=1&sortBy=DD`;
+  
+  console.log(`[INFO] Searching URL: ${searchUrl}`);
+  await page.goto(searchUrl, { waitUntil: "domcontentloaded" });
 
-  await page.waitForSelector(
-    'input[aria-label="Search by title, skill, or company"]',
-    { timeout: 15000 }
-  );
-  await page.click('input[aria-label="Search by title, skill, or company"]', {
-    clickCount: 3,
-  });
-  await page.type(
-    'input[aria-label="Search by title, skill, or company"]',
-    keyword,
-    { delay: 50 }
-  );
-
-  await page.waitForSelector('input[aria-label="City, state, or zip code"]', {
-    timeout: 15000,
-  });
-  await page.click('input[aria-label="City, state, or zip code"]', {
-    clickCount: 3,
-  });
-  await page.type('input[aria-label="City, state, or zip code"]', location, {
-    delay: 50,
-  });
-
-  await page.keyboard.press("Enter");
-  await page.waitForSelector(jobCardSelector, { timeout: 30000 });
-  await autoScroll();
-}
-
-async function autoScroll() {
-  await page.evaluate(async () => {
-    await new Promise((resolve) => {
-      let totalHeight = 0;
-      const distance = 500;
-      const timer = setInterval(() => {
-        window.scrollBy(0, distance);
-        totalHeight += distance;
-        if (totalHeight >= document.body.scrollHeight) {
-          clearInterval(timer);
-          resolve();
-        }
-      }, 200);
-    });
-  });
-}
-
-// Filters
-async function applyFilters() {
-  console.log("[INFO] Applying filters...");
   try {
-    await page.waitForTimeout(1500);
-
-    const dateFilter = await page.$('button[aria-label^="Date posted filter"]');
-    if (dateFilter) {
-      await dateFilter.click();
-      await page.waitForTimeout(500);
-      const timeOption =
-        Period === "Past 24 hours"
-          ? 'label[for="timePostedRange-r86400"]'
-          : 'label[for="timePostedRange-r604800"]';
-      if (await page.$(timeOption)) await page.click(timeOption);
-      await dateFilter.click();
-    }
-
-    console.log("[INFO] Filters applied & results loaded");
-  } catch (err) {
-    console.warn("[WARN] Filter application failed:", err.message);
+    await page.waitForSelector(selectors.jobCard, { timeout: 20000 });
+    await page.evaluate(() => {
+        const list = document.querySelector('.jobs-search-results-list');
+        if (list) list.scrollTo(0, 5000);
+    });
+  } catch (e) {
+    console.log("[WARN] No jobs found.");
   }
-}
-
-async function applyToJobs() {
-  let pageApplied = 0;
-
-  const jobs = await page.$$(jobCardSelector);
-  for (const [index, job] of jobs.entries()) {
-    try {
-      await job.click();
-      await page.waitForTimeout(2500);
-
-      const jobTitle = await page.evaluate(() => {
-        const el = document.querySelector("h1");
-        return el ? el.innerText.trim() : "Unknown Title";
-      });
-
-      const company = await page.evaluate(() => {
-        const el = document.querySelector(
-          ".job-details-jobs-unified-top-card__company-name a"
-        );
-        return el ? el.innerText.trim() : "Unknown Company";
-      });
-
-      const jobLink = await page.evaluate(() => window.location.href);
-      const portal = "LinkedIn";
-
-      const easyApplyBtn = await page.$(
-        'button.jobs-apply-button, button[aria-label="Easy Apply"], button[data-control-name="jobdetails_topcard_inapply"]'
-      );
-
-      if (easyApplyBtn) {
-        console.log(`[INFO] Easy Apply job found at index ${index + 1}`);
-        await easyApplyBtn.click();
-        await page.waitForTimeout(2000);
-
-        const applied = await handleApplicationForm();
-        if (applied) {
-          totalApplied++;
-          pageApplied++;
-
-          try {
-            await saveToDb({
-              jobTitle,
-              company,
-              jobLink,
-              portal,
-              status: "applied",
-            });
-            console.log(`[DB] Saved application → ${jobTitle} at ${company}`);
-          } catch (err) {
-            console.error("Error saving application to DB:", err);
-          }
-        }
-
-        const dismiss = await page.$(
-          'button[aria-label="Dismiss"], button[aria-label="Close"]'
-        );
-        if (dismiss) {
-          await dismiss.click();
-          await page.waitForTimeout(1000);
-        }
-      } else {
-        console.log(`[SKIP] No Easy Apply for job ${index + 1}`);
-      }
-    } catch (err) {
-      console.error(`[ERROR] Job index ${index + 1} failed:`, err.message);
-    }
-
-    if (totalApplied >= MAX_APPLICATIONS) break;
-  }
-
-  console.log(`[INFO] Applied to ${pageApplied} jobs this search`);
 }
 
 async function handleApplicationForm() {
-  try {
-    const MAX_FORM_TIME = 20000;
-    const startTime = Date.now();
+  let steps = 0;
+  while (steps < 15) {
+    steps++;
+    await new Promise(r => setTimeout(r, 2000));
 
-    while (true) {
-      await page.waitForTimeout(1200);
+    // 1. Handle Text Inputs
+    const inputs = await page.$$(selectors.textInput);
+    for (const input of inputs) {
+      const isFilled = await page.evaluate(el => el.value.length > 0, input);
+      if (!isFilled) {
+        const label = await page.evaluate(el => {
+            const container = el.closest('div.jobs-easy-apply-form-section__grouping') || el.closest('div');
+            return container ? container.innerText.toLowerCase() : "";
+        }, input);
 
-      if (Date.now() - startTime > MAX_FORM_TIME) {
-        console.log("[SKIP] Form took too long — skipping job");
-        const closeBtn = await page.$("button.artdeco-modal__dismiss");
-        if (closeBtn) await closeBtn.click();
-        return false;
+        let val = "1";
+        if (label.includes("experience") || label.includes("years") || label.includes("programming")) {
+            val = "2";
+        } else if (label.includes("salary") || label.includes("expectation") || label.includes("ctc")) {
+            val = "500000";
+        }
+        await input.type(val, { delay: 50 });
       }
-
-      const inputs = await page.$$("input.artdeco-text-input--input");
-      for (const input of inputs) {
-        try {
-          const { label, val } = await page.evaluate((el) => {
-            const labelEl =
-              el.closest("label") || el.parentElement?.querySelector("label");
-            return {
-              label: labelEl ? labelEl.innerText.toLowerCase() : "",
-              val: el.value.trim(),
-            };
-          }, input);
-
-          if (!val) {
-            await input.click({ clickCount: 3 });
-            if (label.includes("salary")) {
-              await input.type("1000000", { delay: 50 });
-            } else if (label.includes("experience")) {
-              await input.type(`${AvgExperience}`, { delay: 50 });
-            } else {
-              await input.type("1", { delay: 50 });
-            }
-          }
-        } catch {}
-      }
-
-      const nextBtn = await page.$(
-        'button[aria-label="Continue to next step"], button[aria-label="Next"], button[aria-label="Review your application"]'
-      );
-      if (nextBtn) {
-        await nextBtn.click();
-        await page.waitForTimeout(1500);
-        continue;
-      }
-
-      break;
     }
 
-    const submitBtn = await page.$(
-      'button[aria-label="Submit application"], button[data-control-name="submit_unify"]'
-    );
+    // 2. Handle Dropdowns (Select Yes)
+    const selects = await page.$$(selectors.select);
+    for (const select of selects) {
+      await page.evaluate(el => {
+        const options = Array.from(el.options);
+        const yesOption = options.find(opt => opt.text.toLowerCase().includes('yes'));
+        if (yesOption) {
+          el.value = yesOption.value;
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }, select);
+    }
+
+    // 3. Handle Radio Buttons
+    const radios = await page.$$(selectors.radioLabel);
+    for (let i = 0; i < radios.length; i += 2) {
+      const isChecked = await page.evaluate(el => {
+        const input = document.getElementById(el.getAttribute('for'));
+        return input ? input.checked : false;
+      }, radios[i]);
+      if (!isChecked) await radios[i].click();
+    }
+
+    // 4. Navigation
+    const submitBtn = await page.$(selectors.submitBtn);
     if (submitBtn) {
       await submitBtn.click();
-      await page.waitForTimeout(3000);
-      const success = await page.$(".artdeco-toast-item, .application-outlet");
-      if (success) return true;
+      await new Promise(r => setTimeout(r, 3000));
+      return true;
     }
 
-    return false;
-  } catch (err) {
-    console.error("[ERROR] Application form failed:", err.message);
-    return false;
+    const nextBtn = await page.$(selectors.nextBtn);
+    if (nextBtn) {
+      await nextBtn.click();
+    } else {
+      break; 
+    }
+  }
+  return false;
+}
+
+async function applyToJobs() {
+  let jobs = await page.$$(selectors.jobCard);
+  
+  for (let i = 0; i < Math.min(jobs.length, numberOfOffersPerPage); i++) {
+    if (totalApplied >= MAX_APPLICATIONS) break;
+
+    try {
+      jobs = await page.$$(selectors.jobCard);
+      if (!jobs[i]) continue;
+      await jobs[i].scrollIntoView();
+      await jobs[i].click();
+      await new Promise(r => setTimeout(r, 2500)); 
+
+      const easyApplyBtn = await page.$(selectors.easyApplyBtn);
+      if (easyApplyBtn) {
+        await page.evaluate(btn => {
+            btn.scrollIntoView();
+            btn.click();
+        }, easyApplyBtn);
+
+        const jobTitle = await page.$eval("h2", el => el.innerText.trim()).catch(() => "Unknown Job");
+        console.log(`[INFO] Applying: ${jobTitle}`);
+        
+        const success = await handleApplicationForm();
+        if (success) {
+          totalApplied++;
+          await saveToDb({ jobTitle, status: "applied", portal: "LinkedIn" });
+          console.log(`[SUCCESS] Applied (${totalApplied}/${MAX_APPLICATIONS})`);
+        }
+
+        const dismiss = await page.$(selectors.dismissBtn);
+        if (dismiss) {
+          await dismiss.click();
+          await new Promise(r => setTimeout(r, 1000));
+          const discard = await page.$("button[data-control-name='discard_application_confirm_btn']");
+          if (discard) await discard.click();
+        }
+      }
+    } catch (err) {
+      console.error(`[ERROR] Job index ${i} failed:`, err.message);
+    }
   }
 }
 
@@ -311,19 +202,16 @@ module.exports.applyJobs = async (req, res) => {
     await launchBrowser();
     await loginLinkedIn();
 
-    for (const keyword of keywords) {
+    for (const keyword of targetKeywords) {
       if (totalApplied >= MAX_APPLICATIONS) break;
       await searchJobs(keyword);
-      await applyFilters();
       await applyToJobs();
     }
 
-    res.status(200).json({ message: `Applied to ${totalApplied} jobs` });
+    res.status(200).json({ status: "Success", appliedCount: totalApplied });
   } catch (err) {
-    console.error("[FATAL] Bot crashed:", err.message);
-    res
-      .status(500)
-      .json({ error: "Job application failed", details: err.message });
+    console.error("[FATAL]", err);
+    res.status(500).json({ error: err.message });
   } finally {
     if (browser) await browser.close();
   }

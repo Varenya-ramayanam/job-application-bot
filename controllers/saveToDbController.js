@@ -1,22 +1,22 @@
-const Application = require('../models/Application');
+const { db, admin } = require('../config/firebase');
 
-// Save successfully applied job
 const saveToDb = async (job) => {
   try {
-    const application = new Application({
+    const application = {
       jobTitle: job.jobTitle?.toString() || "Unknown",
       company: job.company?.toString() || "Unknown",
       jobLink: job.jobLink?.toString() || "",
       portal: job.portal?.toString() || "Unknown",
-      status: 'applied'
-    });
+      status: 'applied',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
 
-    await application.save();
-    console.log(`✅ Saved to DB: ${application.jobTitle} at ${application.company}`);
+    await db.collection('applications').add(application);
+
+    console.log(`✅ Saved to Firestore: ${application.jobTitle}`);
   } catch (err) {
-    console.error('❌ Error saving application to DB:', err.message);
+    console.error('❌ Firestore save error:', err.message);
   }
 };
 
 module.exports = { saveToDb };
-
