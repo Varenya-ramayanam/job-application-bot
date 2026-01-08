@@ -4,3 +4,12 @@ dist/
 config.json
 node_modules
 serviceAccountKey.json
+
+config/
+config/firebase.js
+config/serviceAccountKey.json
+
+config/*serviceAccount*
+config/*.json
+
+config/serviceAccountKey*.json
